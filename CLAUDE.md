@@ -19,46 +19,53 @@ plane handles orchestration; an event-driven control plane in the user's AWS
 account launches one fresh, isolated MicroVM per Claude session. See `README.md`
 for the full narrative and `docs/architecture.png`.
 
-## Two independent codebases
+## Three independent UV projects
 
-This repo contains **two separate runtimes** that never share code. Understand
-which one you are touching before editing:
+The repo is a small monorepo. Each runtime is its own UV project with its own
+`pyproject.toml` / `uv.lock`; the **root holds only orchestration** (Justfile,
+`docker-compose.yml`, `container/Dockerfile`, CI, docs, specs). Do not mix deps
+across projects. Understand which one you are touching before editing:
 
-1. **Launcher** (Python) — `src/launcher/`. A FastAPI app that verifies the
-   inbound webhook and calls `RunMicrovm`. One OCI image runs two ways: under
-   `uvicorn` locally and under **Mangum** as a Lambda container image. The
-   control plane is defined in **CDK** at `utils/cdk/` (the SAM `template.yaml`
-   is retained only as a parity reference and is superseded).
-2. **In-MicroVM worker** (Node.js) — `src/microvm-image/`. An HTTP lifecycle-hook
-   server baked into the MicroVM image. Built with `npm` inside the Dockerfile
-   and snapshotted at image-build time. Has its own `package.json`; do not mix
-   its deps with the Python side. **Porting this worker to Python is a separate,
-   out-of-scope follow-up spec** (this cycle implements the launcher only).
+1. **Launcher** (Python) — `launcher/`. A FastAPI app that verifies the inbound
+   webhook and calls `RunMicrovm`. One OCI image runs two ways: under `uvicorn`
+   locally and under **Mangum** as a Lambda container image. Operator scripts
+   (`launcher/scripts/verify.py`, `build-image.sh`) live here too.
+2. **Worker** (Python scaffold) — `worker/`. A placeholder UV project for the
+   future Python port of the in-MicroVM hook server. The **current, running
+   worker is still TypeScript** at `src/microvm-image/` (`worker/worker.mjs`),
+   built with `npm` inside its Dockerfile and snapshotted at image-build time.
+   Porting it to Python is a separate, out-of-scope follow-up spec.
+3. **CDK control plane** (Python) — `utils/cdk/`. The CDK stack + constructs that
+   deploy the launcher. The SAM `template.yaml` at the root is retained only as a
+   parity reference and is superseded.
 
-The root `pyproject.toml` is a UV project holding the launcher's runtime + dev
-deps (including the vendored boto3/botocore wheels at
-`src/launcher/wheels/`, wired via `[tool.uv.sources]`). `src/scripts/verify.py`
-is an operator-side script run from a developer's machine (uses the org API key).
+`boto3`/`botocore` come from upstream PyPI (>= 1.43.40 ships the
+`lambda-microvms` service model) — no vendored wheels.
 
 ## Commands (Justfile)
 
 ```bash
-just sync            # uv sync (install deps)
-just run-local       # uvicorn launcher.app:app with LAUNCHER_USE_STUB=1 (no AWS)
-just test            # pytest -q  (18 launcher tests)
+just sync            # launcher: uv sync (install deps)
+just run-local       # launcher: uvicorn launcher.app:app with LAUNCHER_USE_STUB=1 (no AWS)
+just test            # launcher: pytest -q  (18 tests)
 just test-one tests/contract/test_webhook.py::test_signed_start_returns_200_with_microvm_id
-just lint            # ruff check .
-just format          # ruff format .
-just verify          # lint + format-check + test gate
-just docker-build    # build the Lambda container image
-just docker-up      # compose: DynamoDB Local + launcher (uvicorn) on :8080
-just cdk-synth      # synthesize the CDK control-plane template (no Docker)
-just cdk-test       # CDK construct tests (needs Node on PATH — see note)
-just cdk-deploy     # DELEGATED: needs Docker + `cdk` CLI + AWS creds + bootstrap
+just lint            # launcher: ruff check .
+just format          # launcher: ruff format .
+just verify          # launcher: lint + format-check + test gate
+just worker-test     # worker scaffold: pytest -q  (1 test)
+just worker-lint     # worker scaffold: ruff check .
+just docker-build    # build the Lambda container image (context = repo root)
+just docker-up       # compose: DynamoDB Local + launcher (uvicorn) on :8080
+just cdk-synth       # synthesize the CDK control-plane template (no Docker)
+just cdk-test        # CDK construct tests (6 tests; needs Node on PATH — see note)
+just cdk-deploy      # DELEGATED: needs Docker + `cdk` CLI + AWS creds + bootstrap
 ```
 
-Do **not** run `make` targets — ask the user. Do not run `just cdk-deploy` /
-`docker push` yourself; those touch AWS/external registries.
+Recipes `cd` into the right project themselves — run them from the repo root.
+
+Do **not** run `make` targets — ask the user. Do not run `just docker-build` /
+`just docker-up` / `just cdk-deploy` / `docker push` yourself — those build the
+image or touch AWS/external registries; delegate them to the operator.
 
 ### CDK tests need Node
 
@@ -99,36 +106,42 @@ environment-key secret into the VM. The **MicroVM's execution role** reads
 **only** the environment key. `src/launcher/shared/payload.py` enforces this
 with a `_FORBIDDEN_KEYS` guard — never put `ANTHROPIC_API_KEY` or
 `ANTHROPIC_ENVIRONMENT_KEY` in the run-hook payload (test-asserted in
-`tests/unit/test_payload.py` and `tests/unit` boundary checks; CDK env checked
-in `utils/cdk/tests/test_control_plane.py`).
+`launcher/tests/unit/test_payload.py` and `launcher/tests/unit` boundary checks;
+CDK env checked in `utils/cdk/tests/test_control_plane.py`).
 
 ## Key files and why they exist
 
-- `src/launcher/app.py` — FastAPI app + `handler = Mangum(app)`. The webhook
-  route is `async def`; the blocking `process_webhook` flow is offloaded to a
-  worker thread via `anyio.to_thread.run_sync` (constitution Principle III).
-- `src/launcher/launcher.py` — `verify_signature`, the pure `Launcher` class,
-  idempotency builders (`build_idempotency_with`/`reset_idempotency` let tests
-  inject an in-memory persistence layer), `make_client` (stub vs boto3), and
-  `process_webhook` (the full blocking flow).
-- `src/launcher/config.py` — `LauncherConfig` (Pydantic-settings, env-driven;
-  env var aliases match the CDK/SAM template).
-- `src/launcher/shared/microvm_client.py` — `Boto3MicroVmClient` calling the
-  `lambda-microvms` service through **vendored** boto3/botocore wheels in
-  `src/launcher/wheels/` (the Lambda runtime lacks this service model).
-- `src/launcher/shared/rate_limiter.py` — `TokenBucket` enforcing the 5 TPS
-  limit.
-- `container/Dockerfile` — single-stage build on the AWS Lambda Python base;
-  `uv sync --no-dev` installs runtime deps (ABI-matched to the runtime), then
-  the app source is copied to `${LAMBDA_TASK_ROOT}/launcher`.
+- `launcher/src/launcher/app.py` — FastAPI app + `handler = Mangum(app)`. The
+  webhook route is `async def`; the blocking `process_webhook` flow is offloaded
+  to a worker thread via `anyio.to_thread.run_sync` (constitution Principle III).
+- `launcher/src/launcher/launcher.py` — `verify_signature`, the pure `Launcher`
+  class, idempotency builders (`build_idempotency_with`/`reset_idempotency` let
+  tests inject an in-memory persistence layer), `make_client` (stub vs boto3),
+  and `process_webhook` (the full blocking flow).
+- `launcher/src/launcher/config.py` — `LauncherConfig` (Pydantic-settings,
+  env-driven; env var aliases match the CDK/SAM template).
+- `launcher/src/launcher/shared/microvm_client.py` — `Boto3MicroVmClient` calling
+  the `lambda-microvms` service via upstream boto3/botocore (>= 1.43.40 ships the
+  model — no vendored wheels).
+- `launcher/src/launcher/shared/rate_limiter.py` — `TokenBucket` enforcing the 5
+  TPS limit.
+- `container/Dockerfile` — single-stage build on the AWS Lambda Python base
+  (`/var/lang/bin/python3.12`); `uv sync --no-dev` installs runtime deps
+  (ABI-matched to the runtime) from `launcher/uv.lock`, then the app source is
+  copied to `${LAMBDA_TASK_ROOT}/launcher`. `.dockerignore` limits the context to
+  `launcher/`.
+- `docker-compose.yml` — local parity; overrides the image `entrypoint:` to
+  `/var/lang/bin/python3` to run uvicorn (the base `/lambda-entrypoint.sh` takes
+  exactly one arg — the handler) and sets `PYTHONPATH=/var/task`.
 - `utils/cdk/` — the CDK control plane (stack + constructs). `app.py` pins
   `outdir="cdk.out"` and gates the real Docker image build behind
   `CDK_BUILD_IMAGE=1` (default) so `just cdk-synth` works without Docker.
 - `template.yaml` — **superseded** SAM reference; kept for parity diffing
   against the CDK output (FR-007).
-- `src/microvm-image/worker/worker.mjs` — the in-VM hook server (Node.js).
-- `src/scripts/build-image.sh` / `verify.py` — operator-side image build and
-  end-to-end verify (use the org API key, never AWS compute).
+- `src/microvm-image/worker/worker.mjs` — the in-VM hook server (Node.js; the
+  current worker — `worker/` is the Python-port scaffold).
+- `launcher/scripts/build-image.sh` / `verify.py` — operator-side MicroVM image
+  build and end-to-end verify (use the org API key, never AWS compute).
 
 ## Conventions
 

@@ -1,0 +1,8 @@
+# Keep the Lambda image build context lean.
+#
+# container/Dockerfile is referenced via -f (outside the context) and only
+# COPYs from launcher/, so every other path is excluded from the build context.
+# This also bounds the CDK DockerImageFunction asset staging size.
+*
+!launcher
+!launcher/**

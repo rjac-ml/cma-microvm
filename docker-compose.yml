@@ -2,8 +2,13 @@
 #
 # Brings up DynamoDB Local, creates the idempotency table, and runs the SAME
 # container image that deploys to AWS — but under uvicorn instead of the Lambda
-# Runtime Interface. Signature verification is skipped locally (no signing
-# secret configured); set SIGNING_SECRET_ARN to enable it.
+# Runtime Interface. The AWS Lambda Python base image's `/lambda-entrypoint.sh`
+# requires exactly one argument (the handler), so to run uvicorn or the init
+# script we override `entrypoint:` to `/var/lang/bin/python3` and pass args via
+# `command:`. The base image does not export PYTHONPATH, so it is set explicitly
+# to /var/task (where the Dockerfile lays down deps + the `launcher` package).
+# Signature verification is skipped locally (no signing secret configured); set
+# SIGNING_SECRET_ARN to enable it.
 #
 #   docker compose up        # http://localhost:8080/webhook + /healthz
 #   docker compose down
@@ -19,11 +24,14 @@ services:
     build:
       context: .
       dockerfile: container/Dockerfile
+    working_dir: /var/task
+    entrypoint: ["/var/lang/bin/python3"]
+    command: ["/var/task/dynamodb_init.py"]
     environment:
+      PYTHONPATH: /var/task
       AWS_ENDPOINT_URL_DYNAMODB: http://dynamodb-local:8000
       AWS_REGION: us-west-2
       IDEMPOTENCY_TABLE: launcher-idempotency
-    command: ["/var/lang/python3.12/bin/python3", "/var/task/dynamodb_init.py"]
     volumes:
       - ./container/dynamodb_init.py:/var/task/dynamodb_init.py:ro
     depends_on:
@@ -35,9 +43,9 @@ services:
       context: .
       dockerfile: container/Dockerfile
     working_dir: /var/task
+    entrypoint: ["/var/lang/bin/python3"]
     command:
       [
-        "/var/lang/python3.12/bin/python3",
         "-m",
         "uvicorn",
         "launcher.app:app",
@@ -49,6 +57,7 @@ services:
     ports:
       - "8080:8080"
     environment:
+      PYTHONPATH: /var/task
       LAUNCHER_USE_STUB: "1"
       IDEMPOTENCY_TABLE: launcher-idempotency
       AWS_ENDPOINT_URL_DYNAMODB: http://dynamodb-local:8000
