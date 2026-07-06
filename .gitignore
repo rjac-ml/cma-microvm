@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# UV
+# uv.lock is committed (reproducible builds).
+
+# CDK
+utils/cdk/cdk.out/
+utils/cdk/.venv/
+cdk.out/
+
+# Node / jsii
+node_modules/
+
+# Local runtime artifacts
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store

@@ -10,6 +10,28 @@ This allows your agents to access resources through your AWS environment without
 exposing connectivity, while you retain full monitoring and governance over those
 resources.
 
+> **Launcher status (this cycle):** the launcher is a Python **FastAPI + Mangum**
+> app packaged as a Lambda **container image**, with the control plane defined in
+> **CDK** (`utils/cdk/`). Automation is via a **Justfile** (`just run-local`,
+> `just test`, `just cdk-synth`, `just docker-up`). See `CLAUDE.md` for the
+> current repo layout and commands. The SAM `template.yaml` is retained only as a
+> parity reference (superseded by CDK). The Node.js in-MicroVM worker
+> (`src/microvm-image/`) is unchanged; porting it to Python is a separate
+> follow-up.
+
+## Quickstart (launcher)
+
+```bash
+just sync            # install deps (UV)
+just run-local       # uvicorn on :8000 with the stub MicroVM client (no AWS)
+just test            # pytest  (24 tests: launcher + CDK constructs)
+just cdk-synth       # synthesize the control-plane template to utils/cdk/cdk.out
+just docker-up       # DynamoDB Local + launcher (full local parity) on :8080
+```
+
+CDK tests need Node on PATH (jsii): see `utils/cdk/.tool-versions` and the
+`cdk-test` recipe in `CLAUDE.md`.
+
 This is a working reference intended for learning and adaptation.
 
 ## What is AWS Lambda MicroVMs?

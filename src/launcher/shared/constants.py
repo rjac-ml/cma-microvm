@@ -1,8 +1,12 @@
 """Shared constants for the launcher."""
 
 # AWS-managed network connector ARN templates.
-ALL_INGRESS_TEMPLATE = "arn:aws:lambda:{region}:aws:network-connector:aws-network-connector:ALL_INGRESS"
-INTERNET_EGRESS_TEMPLATE = "arn:aws:lambda:{region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS"
+ALL_INGRESS_TEMPLATE = (
+    "arn:aws:lambda:{region}:aws:network-connector:aws-network-connector:ALL_INGRESS"
+)
+INTERNET_EGRESS_TEMPLATE = (
+    "arn:aws:lambda:{region}:aws:network-connector:aws-network-connector:INTERNET_EGRESS"
+)
 
 
 def all_ingress_arn(region: str) -> str:
@@ -13,6 +17,7 @@ def all_ingress_arn(region: str) -> str:
 def internet_egress_arn(region: str) -> str:
     """INTERNET_EGRESS connector ARN for the given region."""
     return INTERNET_EGRESS_TEMPLATE.format(region=region)
+
 
 DEFAULT_MAX_LIFETIME_SECONDS = 28800  # 8 hours
 

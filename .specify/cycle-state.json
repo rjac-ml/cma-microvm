@@ -1,0 +1,26 @@
+{
+  "goal": "Set up this repo as a full Python implementation of CMA and MicroVM: package the launcher as a Lambda container image (FastAPI + Mangum), generate the deploy template with CDK at utils/cdk, automate run/test/build/deploy with a Justfile, reorganize the repo to accommodate the launcher and the (still-TypeScript) worker, and implement the launcher control flow with tests.",
+  "scope": "full",
+  "auto_approve": true,
+  "feature_directory": "specs/001-launcher-container-cdk",
+  "current_phase": "done",
+  "phases_completed": ["specify", "drill-spec", "plan", "drill-plan", "tasks", "drill-pre-implement", "learn", "implement", "learn-post"],
+  "drill_results": {
+    "spec": { "status": "PASS", "iterations": 1, "completed_at": "2026-07-06T12:48:42Z" },
+    "plan": { "status": "PASS", "iterations": 1, "completed_at": "2026-07-06T12:48:42Z" },
+    "pre-implement": { "status": "PASS", "iterations": 1, "completed_at": "2026-07-06T12:48:42Z" }
+  },
+  "learnings_recorded": [
+    "Anthropic Python SDK has first-party managed-agents helpers — worker is portable to Python",
+    "One container image for dev/prod parity (Lambda + local uvicorn via Mangum)",
+    "Async-first without rewriting Powertools idempotency",
+    "Vendored boto3/botocore wheels carry the lambda-microvms service model",
+    "standardwebhooks <-> anthropic webhooks unwrap is a clean round-trip for tests",
+    "WebhookEvent must read the top-level type, not data.type",
+    "Powertools has no in-memory idempotency layer — subclass BasePersistenceLayer",
+    "CDK (jsii) needs Node; DockerImageCode API + App outdir gotchas",
+    "Lambda container base pinned to Python 3.12 (not 3.14) for wheel ABI safety"
+  ],
+  "started_at": "2026-07-06T12:48:42Z",
+  "updated_at": "2026-07-06T20:10:00Z"
+}

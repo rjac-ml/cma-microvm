@@ -1,4 +1,4 @@
-"""Launcher Lambda: launch one ephemeral MicroVM per started session.
+"""Launcher: launch one ephemeral MicroVM per started session.
 
 On a ``session.status_run_started`` webhook event, verifies the Anthropic webhook
 signature in-process, then launches one MicroVM via ``RunMicrovm`` with the
@@ -15,15 +15,20 @@ Behavior:
 - Dedupes by webhook event id (DynamoDB-backed idempotency).
 - Enforces the RunMicrovm 5 TPS rate limit.
 - On RunMicrovm failure, returns non-2xx so Anthropic retries.
+
+The pure ``Launcher`` core is unchanged from the original implementation; only
+the entry/adapter layer moved to ``app.py`` (FastAPI + Mangum) and logging moved
+to Loguru. ``process_webhook`` is the blocking entry the ASGI route offloads to a
+worker thread (constitution Principle III).
 """
 
 from __future__ import annotations
 
 import json
 import os
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
-from aws_lambda_powertools import Logger
 from aws_lambda_powertools.utilities import parameters
 from aws_lambda_powertools.utilities.idempotency import (
     DynamoDBPersistenceLayer,
@@ -33,7 +38,6 @@ from aws_lambda_powertools.utilities.idempotency import (
 from aws_lambda_powertools.utilities.idempotency.exceptions import (
     IdempotencyAlreadyInProgressError,
 )
-from aws_lambda_powertools.utilities.typing import LambdaContext
 
 # Module-scope import so the heavy anthropic + pydantic + httpx cost is paid
 # once during init, not on every invocation.
@@ -42,24 +46,26 @@ try:
 except ImportError:  # pragma: no cover
     anthropic = None  # type: ignore[assignment]
 
-from shared.constants import (
+from launcher.config import LauncherConfig
+from launcher.logging import logger
+from launcher.shared.constants import (
     DEFAULT_IDLE_POLICY,
-    DEFAULT_LAUNCH_TPS_LIMIT,
     DEFAULT_LOGGING_CONFIG,
-    DEFAULT_MAX_LIFETIME_SECONDS,
     SESSION_RUN_STARTED,
     all_ingress_arn,
     internet_egress_arn,
 )
-from shared.microvm_client import Boto3MicroVmClient, LaunchMicroVmError, MicroVmClient
-from shared.payload import build_run_hook_payload
-from shared.rate_limiter import TokenBucket
-from shared.types import LauncherConfig, WebhookEvent
-
-logger = Logger(service="claude-microvm-sandbox-launcher")
+from launcher.shared.microvm_client import (
+    Boto3MicroVmClient,
+    LaunchMicroVmError,
+    MicroVmClient,
+)
+from launcher.shared.payload import build_run_hook_payload
+from launcher.shared.rate_limiter import TokenBucket
+from launcher.shared.types import WebhookEvent
 
 _SECRET_CACHE_SECONDS = 300
-_IDEMPOTENCY_TTL_SECONDS = DEFAULT_MAX_LIFETIME_SECONDS
+_IDEMPOTENCY_TTL_SECONDS = 28800  # matches DEFAULT_MAX_LIFETIME_SECONDS
 
 _SESSION_ID_PREFIX = "sesn_"
 _SESSION_ID_MAX_LEN = 128
@@ -75,7 +81,7 @@ def verify_signature(body: str, headers: dict[str, str], signing_secret: str) ->
         client.beta.webhooks.unwrap(body, headers=headers, key=signing_secret)
         return True
     except Exception as exc:  # noqa: BLE001
-        logger.warning("webhook signature verification failed: %s", exc)
+        logger.warning("webhook signature verification failed: {}", exc)
         return False
 
 
@@ -87,8 +93,8 @@ class Launcher:
         config: LauncherConfig,
         client: MicroVmClient,
         *,
-        rate_limiter: Optional[TokenBucket] = None,
-        executor: Optional[Callable[[WebhookEvent], dict[str, Any]]] = None,
+        rate_limiter: TokenBucket | None = None,
+        executor: Callable[[WebhookEvent], dict[str, Any]] | None = None,
     ) -> None:
         self._config = config
         self._client = client
@@ -115,16 +121,16 @@ class Launcher:
         )
 
         logger.info(
-            "launched microvm_id=%s for session_id=%s",
+            "launched microvm_id={} for session_id={}",
             launched.microvm_id,
             event.session_id,
         )
         return {"microvm_id": launched.microvm_id}
 
     def handle(self, event: WebhookEvent) -> dict[str, Any]:
-        """Handle one parsed, verified webhook event. Returns an API Gateway response."""
+        """Handle one parsed, verified webhook event. Returns an API-Gateway-style response."""
         if event.data_type != SESSION_RUN_STARTED:
-            logger.info("ignoring non-start event type=%s", event.data_type)
+            logger.info("ignoring non-start event type={}", event.data_type)
             return {"statusCode": 200, "body": "ignored"}
 
         # Validate required fields. Return 200 (not 4xx) for malformed events
@@ -135,7 +141,7 @@ class Launcher:
             return {"statusCode": 200, "body": "ignored"}
 
         if not event.session_id:
-            logger.warning("ignoring event id=%s: missing session_id", event.event_id)
+            logger.warning("ignoring event id={}: missing session_id", event.event_id)
             return {"statusCode": 200, "body": "ignored"}
 
         # Loose shape sanity — log-only, never rejects.
@@ -144,7 +150,7 @@ class Launcher:
             and len(event.session_id) <= _SESSION_ID_MAX_LEN
         ):
             logger.warning(
-                "event id=%s has an implausible session_id shape (proceeding): %r",
+                "event id={} has an implausible session_id shape (proceeding): {!r}",
                 event.event_id,
                 event.session_id,
             )
@@ -152,15 +158,13 @@ class Launcher:
         try:
             result = self._executor(event)
         except IdempotencyAlreadyInProgressError:
-            logger.info("event id=%s already in progress; not re-launching", event.event_id)
+            logger.info("event id={} already in progress; not re-launching", event.event_id)
             return {"statusCode": 200, "body": "in progress"}
         except LaunchMicroVmError as exc:
-            logger.error("RunMicrovm failed for session_id=%s: %s", event.session_id, exc)
+            logger.error("RunMicrovm failed for session_id={}: {}", event.session_id, exc)
             return {
                 "statusCode": 502,
-                "body": json.dumps(
-                    {"error": "run_microvm_failed", "session_id": event.session_id}
-                ),
+                "body": json.dumps({"error": "run_microvm_failed", "session_id": event.session_id}),
             }
 
         return {
@@ -171,58 +175,59 @@ class Launcher:
         }
 
 
-def _load_config() -> LauncherConfig:
-    region = os.environ.get("AWS_REGION", "us-west-2")
-    return LauncherConfig(
-        environment_id=os.environ["ANTHROPIC_ENVIRONMENT_ID"],
-        image_identifier=os.environ["MICROVM_IMAGE_IDENTIFIER"],
-        environment_key_secret_id=os.environ["ENVIRONMENT_KEY_SECRET_ARN"],
-        execution_role_arn=os.environ["MICROVM_EXECUTION_ROLE_ARN"],
-        aws_region=region,
-        signing_secret_arn=os.environ.get("SIGNING_SECRET_ARN"),
-        base_url=os.environ.get("ANTHROPIC_BASE_URL") or None,
-        max_lifetime_seconds=int(
-            os.environ.get("MAX_LIFETIME_SECONDS", DEFAULT_MAX_LIFETIME_SECONDS)
-        ),
-        launch_tps_limit=int(os.environ.get("LAUNCH_TPS_LIMIT", DEFAULT_LAUNCH_TPS_LIMIT)),
-    )
+# --- Idempotency -----------------------------------------------------------
+
+_idempotent_run: Callable[..., dict[str, Any]] | None = None
 
 
-_idempotency_config: Optional[IdempotencyConfig] = None
-_idempotent_run: Optional[Callable[..., dict[str, Any]]] = None
-
-
-def _build_idempotency(table_name: str) -> None:
-    """Construct the DynamoDB persistence layer and idempotent wrapper once."""
-    global _idempotency_config, _idempotent_run
-    if _idempotent_run is not None:
-        return
-
-    persistence = DynamoDBPersistenceLayer(table_name=table_name, expiry_attr="expiration")
-    _idempotency_config = IdempotencyConfig(
+def _make_idempotent_run(persistence_layer: Any) -> Callable[..., dict[str, Any]]:
+    """Build the idempotent wrapper around the launch side effect."""
+    config = IdempotencyConfig(
         event_key_jmespath="event_id",
         expires_after_seconds=_IDEMPOTENCY_TTL_SECONDS,
     )
 
     @idempotent_function(
         data_keyword_argument="event_record",
-        persistence_store=persistence,
-        config=_idempotency_config,
+        persistence_store=persistence_layer,
+        config=config,
     )
-    def _run(event_record: dict[str, Any], *, launch: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    def _run(
+        event_record: dict[str, Any], *, launch: Callable[[], dict[str, Any]]
+    ) -> dict[str, Any]:
         return launch()
 
-    _idempotent_run = _run
+    return _run
 
 
-def _idempotent_executor(
-    launcher: Launcher, context: Optional[LambdaContext]
-) -> Callable[[WebhookEvent], dict[str, Any]]:
-    """Wrap the launch side effect in DynamoDB idempotency."""
+def build_idempotency_with(persistence_layer: Any) -> None:
+    """Install an idempotent executor backed by ``persistence_layer``.
+
+    Prod passes a ``DynamoDBPersistenceLayer``; tests pass an in-memory layer.
+    """
+    global _idempotent_run
+    _idempotent_run = _make_idempotent_run(persistence_layer)
+
+
+def reset_idempotency() -> None:
+    """Clear the installed idempotent executor (test helper)."""
+    global _idempotent_run
+    _idempotent_run = None
+
+
+def _build_idempotency(table_name: str) -> None:
+    """Construct the DynamoDB persistence layer and idempotent wrapper once."""
+    if _idempotent_run is not None:
+        return
+    build_idempotency_with(
+        DynamoDBPersistenceLayer(table_name=table_name, expiry_attr="expiration")
+    )
+
+
+def _idempotent_executor(launcher: Launcher) -> Callable[[WebhookEvent], dict[str, Any]]:
+    """Wrap the launch side effect in DynamoDB idempotency (no Lambda context)."""
 
     def executor(event: WebhookEvent) -> dict[str, Any]:
-        if _idempotency_config is not None and context is not None:
-            _idempotency_config.register_lambda_context(context)
         assert _idempotent_run is not None
         return _idempotent_run(
             event_record={"event_id": event.event_id},
@@ -232,35 +237,44 @@ def _idempotent_executor(
     return executor
 
 
-@logger.inject_lambda_context
-def handler(
-    event: dict[str, Any],
-    context: Optional[LambdaContext] = None,
-    *,
-    verifier: Callable[[str, dict[str, str], str], bool] = verify_signature,
+# --- Composition -----------------------------------------------------------
+
+
+def make_client(config: LauncherConfig) -> MicroVmClient:
+    """Return the MicroVM client: a stub locally, boto3 in AWS."""
+    if os.environ.get("LAUNCHER_USE_STUB") == "1":
+        from launcher.shared.stub_client import StubMicroVmClient
+
+        return StubMicroVmClient()
+    return Boto3MicroVmClient(region_name=config.aws_region)
+
+
+def process_webhook(
+    raw_body: str,
+    headers: dict[str, str],
+    config: LauncherConfig,
+    client: MicroVmClient,
 ) -> dict[str, Any]:
-    """Lambda entry point (API Gateway proxy integration)."""
-    config = _load_config()
+    """Full blocking webhook flow. The ASGI route offloads this to a thread.
 
-    body = event.get("body")
-    raw_body = body if isinstance(body, str) else json.dumps(body or {})
-    headers = event.get("headers") or {}
-
+    Verifies the signature (if a signing secret is configured), builds the
+    Launcher with optional DynamoDB idempotency, and returns an API-Gateway-style
+    response dict ``{"statusCode": ..., "body": ...}``.
+    """
     if config.signing_secret_arn:
         signing_secret = parameters.get_secret(
             config.signing_secret_arn, max_age=_SECRET_CACHE_SECONDS
         )
-        if not verifier(raw_body, headers, signing_secret):
+        if not verify_signature(raw_body, headers, signing_secret):
             logger.info("denying webhook: signature verification failed")
             return {"statusCode": 401, "body": "signature verification failed"}
 
-    client = Boto3MicroVmClient(region_name=config.aws_region)
     launcher = Launcher(config, client)
 
     table_name = os.environ.get("IDEMPOTENCY_TABLE")
     if table_name:
         _build_idempotency(table_name)
-        launcher.set_executor(_idempotent_executor(launcher, context))
+        launcher.set_executor(_idempotent_executor(launcher))
 
     payload = json.loads(raw_body) if raw_body else {}
     return launcher.handle(WebhookEvent.from_payload(payload))
