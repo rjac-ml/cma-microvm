@@ -1,3 +1,7 @@
+# NOTE: This SAM template is SUPERSEDED by the CDK control plane in utils/cdk/
+# (see specs/001-launcher-container-cdk, FR-007). It is retained as a parity
+# reference — the CDK output should reproduce this resource set. Do not extend
+# it; make control-plane changes in utils/cdk/control_plane/ instead.
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >-

@@ -62,7 +62,9 @@ def create_session(client, environment_id: str, agent_id: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Verify the Claude MicroVM Sandbox (webhook).")
-    parser.add_argument("--create", action="store_true", help="Create a session to exercise the flow.")
+    parser.add_argument(
+        "--create", action="store_true", help="Create a session to exercise the flow."
+    )
     args = parser.parse_args()
 
     environment_id = os.environ.get("ANTHROPIC_ENVIRONMENT_ID")

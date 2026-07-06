@@ -1,14 +1,16 @@
 """Client for the AWS Lambda MicroVM RunMicrovm API.
 
 Calls RunMicrovm through the boto3 ``lambda-microvms`` client. boto3 and botocore
-are bundled into the deployment package (see ``requirements.txt``) so the client
-is available to the launcher at runtime.
+are bundled into the deployment package as vendored wheels
+(``src/launcher/wheels/``, wired via ``[tool.uv.sources]`` in ``pyproject.toml``)
+so the client is available to the launcher at runtime.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional, Protocol, Sequence, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 # boto3 service name for the lambda-microvms client.
 DEFAULT_SERVICE_NAME = "lambda-microvms"
@@ -24,8 +26,8 @@ class LaunchMicroVmError(Exception):
         self,
         message: str,
         *,
-        session_id: Optional[str] = None,
-        cause: Optional[BaseException] = None,
+        session_id: str | None = None,
+        cause: BaseException | None = None,
     ) -> None:
         super().__init__(message)
         self.session_id = session_id
@@ -47,15 +49,14 @@ class MicroVmClient(Protocol):
     def launch_microvm(
         self,
         image_identifier: str,
-        run_hook_payload: Optional[str] = None,
-        max_lifetime_seconds: Optional[int] = None,
-        execution_role_arn: Optional[str] = None,
-        idle_policy: Optional[Mapping[str, Any]] = None,
-        logging_config: Optional[Mapping[str, Any]] = None,
-        ingress_network_connectors: Optional[Sequence[str]] = None,
-        egress_network_connectors: Optional[Sequence[str]] = None,
-    ) -> LaunchedMicroVm:
-        ...
+        run_hook_payload: str | None = None,
+        max_lifetime_seconds: int | None = None,
+        execution_role_arn: str | None = None,
+        idle_policy: Mapping[str, Any] | None = None,
+        logging_config: Mapping[str, Any] | None = None,
+        ingress_network_connectors: Sequence[str] | None = None,
+        egress_network_connectors: Sequence[str] | None = None,
+    ) -> LaunchedMicroVm: ...
 
 
 class Boto3MicroVmClient:
@@ -65,7 +66,7 @@ class Boto3MicroVmClient:
         self,
         *,
         region_name: str,
-        client: Optional[Any] = None,
+        client: Any | None = None,
         service_name: str = DEFAULT_SERVICE_NAME,
     ) -> None:
         self._region = region_name
@@ -82,13 +83,13 @@ class Boto3MicroVmClient:
     def launch_microvm(
         self,
         image_identifier: str,
-        run_hook_payload: Optional[str] = None,
-        max_lifetime_seconds: Optional[int] = None,
-        execution_role_arn: Optional[str] = None,
-        idle_policy: Optional[Mapping[str, Any]] = None,
-        logging_config: Optional[Mapping[str, Any]] = None,
-        ingress_network_connectors: Optional[Sequence[str]] = None,
-        egress_network_connectors: Optional[Sequence[str]] = None,
+        run_hook_payload: str | None = None,
+        max_lifetime_seconds: int | None = None,
+        execution_role_arn: str | None = None,
+        idle_policy: Mapping[str, Any] | None = None,
+        logging_config: Mapping[str, Any] | None = None,
+        ingress_network_connectors: Sequence[str] | None = None,
+        egress_network_connectors: Sequence[str] | None = None,
     ) -> LaunchedMicroVm:
         if not image_identifier:
             raise LaunchMicroVmError("image_identifier is required to launch a MicroVM")
@@ -131,7 +132,5 @@ class Boto3MicroVmClient:
         microvm_id = response.get("microvmId")
         endpoint = response.get("endpoint")
         if not microvm_id or not endpoint:
-            raise LaunchMicroVmError(
-                f"RunMicrovm response missing id/endpoint: {response!r}"
-            )
+            raise LaunchMicroVmError(f"RunMicrovm response missing id/endpoint: {response!r}")
         return LaunchedMicroVm(microvm_id=microvm_id, endpoint=endpoint)

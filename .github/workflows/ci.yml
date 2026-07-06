@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint-test:
+    name: lint + test (launcher)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest -q
+
+  cdk-synth:
+    name: CDK synth (control plane)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      # jsii (the CDK Python<->JS bridge) requires Node.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: cd utils/cdk && uv sync
+      - run: cd utils/cdk && CDK_BUILD_IMAGE=0 uv run python app.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cdk-template
+          path: utils/cdk/cdk.out/*.template.json
+          if-no-files-found: error
+
+  docker-build:
+    name: build container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      # Build the Lambda container image (the artifact deployed to any cloud).
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: container/Dockerfile
+          push: false
+          load: true
+          tags: claude-microvm-launcher:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
