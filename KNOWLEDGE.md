@@ -6,6 +6,36 @@ Issues encountered and resolutions for CMA-MicroVM. Per constitution Development
 
 ## 2026-07-06
 
+### Lambda Python base: interpreter at /var/lang/bin/python3.12; entrypoint takes one arg
+
+**Context**: spec `001-launcher-container-cdk`, packaging the launcher as a
+Lambda container image + local Docker Compose parity.
+
+**Issue**: Two bugs hid behind the same wrong guess. (a) The interpreter in
+`public.ecr.aws/lambda/python:3.12` lives at `/var/lang/bin/python3.12` — NOT
+`/var/lang/python3.12/bin/python3.12` (which doesn't exist); `UV_PYTHON` pointed
+at the missing path, so `uv sync` failed with "No interpreter found at path".
+(b) The base image's `/lambda-entrypoint.sh` does `if [ $# -ne 1 ]; then exit
+142`, expecting the handler name as its single argument — so a compose
+`command:` of `["/var/lang/python3.12/bin/python3", "-m", "uvicorn", ...]` would
+`exit 142` even with the correct path. The base image also does NOT export
+`PYTHONPATH`.
+
+**Resolution**: Pin `UV_PYTHON=/var/lang/bin/python3.12` in the Dockerfile. In
+`docker-compose.yml`, override `entrypoint:` to `["/var/lang/bin/python3"]` and
+pass uvicorn / the init script via `command:`; set `PYTHONPATH=/var/task`
+explicitly (the Dockerfile lays deps + the `launcher` package flat in
+`${LAMBDA_TASK_ROOT}`).
+
+**Prevention**: Don't guess interpreter paths in AWS Lambda base images —
+`docker run --entrypoint /bin/sh <image> -c 'which python3.12'` to confirm. And
+remember the Lambda base entrypoint is handler-only; to run anything else
+(uvicorn, a one-shot script) override `entrypoint:`, not just `command:`.
+
+**Refs**: `container/Dockerfile`, `docker-compose.yml`, `container/dynamodb_init.py`.
+
+---
+
 ### standardwebhooks ↔ anthropic webhooks unwrap is a clean round-trip for tests
 
 **Context**: spec `001-launcher-container-cdk`, implementing the webhook
@@ -116,7 +146,7 @@ launcher `requires-python` is `>=3.11` so the source is unchanged.
 with mature manylinux wheel coverage and build the venv in the same base so
 compiled extensions match the runtime ABI exactly.
 
-**Refs**: `container/Dockerfile`, `pyproject.toml`.
+**Refs**: `container/Dockerfile`, `launcher/pyproject.toml`.
 
 ---
 
@@ -185,20 +215,25 @@ means "the loop never blocks," not "every line is `await`."
 
 ---
 
-### Vendored boto3/botocore wheels carry the lambda-microvms service model
+### Upstream botocore (>= 1.43.40) ships lambda-microvms — vendored wheels dropped
 
 **Context**: spec `001-launcher-container-cdk`, dependency management.
 
-**Issue**: Upstream `boto3` does not ship the `lambda-microvms` service model;
-the launcher depends on that client.
+**Issue**: The launcher depends on the boto3 `lambda-microvms` client. Earlier in
+the cycle upstream `boto3`/`botocore` did NOT ship that service model, so the
+repo vendored pinned wheels (`boto3`/`botocore` 1.43.34) wired via
+`[tool.uv.sources]`. That was the original rationale for the wheels.
 
-**Resolution**: Keep the vendored `boto3`/`botocore` wheels (pinned versions with
-the model) and install them into the container image via UV. A container image
-removes the 250 MB unzipped zip limit, but the model source stays the same
-vendored wheels.
+**Resolution**: As of `botocore` 1.43.40, upstream ships the `lambda-microvms`
+service model (verified: `boto3.client("lambda-microvms", ...)` resolves to a
+`LambdaMicroVMs` client from a plain PyPI install). The vendored wheels and
+`[tool.uv.sources]` are removed; `launcher/pyproject.toml` pins
+`boto3`/`botocore >= 1.43.40` from upstream. The container image installs boto3
+straight from PyPI — no wheels to copy.
 
-**Prevention**: When a service model isn't in upstream boto3, vendor the exact
-wheels; don't rely on runtime `aws configure add-model` in a function
-environment.
+**Prevention**: Re-check whether a once-missing service model has landed upstream
+before keeping vendored wheels pinned; boto3/botocore ship new models frequently.
+Vendor only as a last resort, and revisit the decision each cycle.
 
-**Refs**: `src/launcher/wheels/` (planned), `specs/001-launcher-container-cdk/research.md`.
+**Refs**: `launcher/pyproject.toml`, `launcher/src/launcher/shared/microvm_client.py`,
+`specs/001-launcher-container-cdk/research.md`.

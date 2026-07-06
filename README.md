@@ -98,27 +98,31 @@ compute.
 
 ```
 .
-├── template.yaml                    # SAM template: launcher + REST API, WAF,
-│                                    #   secrets, MicroVM execution role, image
-│                                    #   build role + artifact bucket
-├── src/
-│   ├── microvm-image/               # Contents zipped into the MicroVM image
-│   │   ├── Dockerfile               # AL2023 + Node worker, /workspace, /mnt/session/outputs
-│   │   └── worker/worker.mjs        # HTTP lifecycle-hook server (EnvironmentWorker)
-│   ├── functions/                   # Launcher Lambda (sam build packages this)
-│   │   ├── launcher.py              # Verifies webhook signature; RunMicrovm per session
-│   │   ├── requirements.txt         # Launcher deps (anthropic[webhooks], powertools, bundled boto3/botocore)
-│   │   ├── shared/                  # Payload, rate limiter, MicroVM client, types
-│   │   └── wheels/                  # Vendored boto3/botocore wheels (lambda-microvms client)
-│   ├── scripts/
-│   │   ├── build-image.sh           # Zip + upload + create-microvm-image
-│   │   └── verify.py                # Operator-side: create a session to exercise the flow
+├── launcher/                        # UV project — the launcher (Python)
+│   ├── pyproject.toml  uv.lock      # runtime + dev deps (FastAPI, Mangum, anthropic, powertools, boto3)
+│   ├── src/launcher/                # app.py, launcher.py, config.py, shared/ (payload, rate limiter, MicroVM client)
+│   ├── scripts/                     # operator-side: verify.py, build-image.sh
+│   └── tests/                       # contract / integration / unit
+├── worker/                          # UV project — Python-port scaffold (placeholder)
+│   ├── pyproject.toml  uv.lock      #   the real worker is still TypeScript (below)
+│   ├── src/worker/                  # empty package
+│   └── tests/
+├── utils/cdk/                       # UV project — CDK control plane (stack + constructs)
+├── container/Dockerfile             # builds the launcher Lambda container image (context = repo root)
+├── docker-compose.yml  Justfile     # local parity + automation (root = orchestration only)
+├── src/microvm-image/               # the CURRENT worker (Node.js), zipped into the MicroVM image
+│   ├── Dockerfile                   # AL2023 + Node worker, /workspace, /mnt/session/outputs
+│   └── worker/worker.mjs            # HTTP lifecycle-hook server (EnvironmentWorker)
+├── template.yaml                    # SAM template — SUPERSEDED parity reference (CDK is the deploy path)
 ├── docs/                            # Architecture diagram + notes
-├── README.md  LICENSE  CONTRIBUTING.md  CODE_OF_CONDUCT.md
-└── pyproject.toml  requirements.txt
+└── README.md  CLAUDE.md  LICENSE  CONTRIBUTING.md  CODE_OF_CONDUCT.md
 ```
 
-`samconfig.toml` and `.aws-sam/` are generated locally by SAM and are git-ignored.
+Each of `launcher/`, `worker/`, and `utils/cdk/` is an independent UV project
+with its own `pyproject.toml` / `uv.lock`; the root holds only orchestration
+(Justfile, compose, the container Dockerfile, CI, docs). `boto3`/`botocore` come
+from upstream PyPI (>= 1.43.40 ships the `lambda-microvms` service model) — no
+vendored wheels.
 
 ## Deployment
 
@@ -158,7 +162,7 @@ aws secretsmanager put-secret-value --secret-id <SigningSecretArn>        --secr
 ### 3. Build the MicroVM image (CLI)
 
 ```bash
-./src/scripts/build-image.sh
+./launcher/scripts/build-image.sh
 ```
 
 The script zips `src/microvm-image/`, uploads to S3, and creates the image with
@@ -172,7 +176,7 @@ lifecycle hooks enabled. Monitor the build in CloudWatch under
 export ANTHROPIC_API_KEY="sk-ant-..."          # organization-scoped, operator only
 export ANTHROPIC_ENVIRONMENT_ID="env_..."
 export AGENT_ID="agent_..."
-python src/scripts/verify.py --create
+cd launcher && uv run python scripts/verify.py --create
 ```
 
 This creates a session, triggers the webhook, launches a MicroVM, and runs the

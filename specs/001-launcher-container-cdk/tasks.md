@@ -246,3 +246,37 @@ T030, T032, T035, T036, T037, T039, T041, T042.
 **Key deviation vs plan:** the container base is
 `public.ecr.aws/lambda/python:3.12` (not 3.14) for manylinux wheel ABI safety;
 `requires-python` stays `>=3.11`. See `KNOWLEDGE.md`.
+
+---
+
+## Post-cycle restructure (2026-07-06, PR #1 follow-up)
+
+After the cycle closed, PR #1 review surfaced three fixes applied as a
+follow-up commit on the same branch:
+
+- **Per-component UV projects.** The repo is now a small monorepo: `launcher/`
+  (the launcher — its own UV project + tests + operator scripts), `worker/`
+  (empty Python-port scaffold; the running worker is still the TypeScript
+  `src/microvm-image/`), and `utils/cdk/` (CDK). The root holds only
+  orchestration (Justfile, `docker-compose.yml`, `container/Dockerfile`, CI,
+  docs). The old root `pyproject.toml` / `uv.lock` moved into `launcher/`.
+- **Vendored wheels dropped.** Upstream `botocore` >= 1.43.40 ships the
+  `lambda-microvms` service model (verified — a `LambdaMicroVMs` client is
+  creatable from a plain PyPI install), so the vendored `boto3`/`botocore`
+  1.43.34 wheels and `[tool.uv.sources]` are removed; `launcher/pyproject.toml`
+  pins `boto3`/`botocore >= 1.43.40`. See `KNOWLEDGE.md`.
+- **Container build fixed.** The Dockerfile's `UV_PYTHON` pointed at a
+  non-existent path; the correct interpreter is `/var/lang/bin/python3.12`.
+  `docker-compose.yml` also overrode only `command:` — but the Lambda base
+  `/lambda-entrypoint.sh` exits 142 unless it receives exactly one arg (the
+  handler), so compose now overrides `entrypoint:` to `/var/lang/bin/python3`
+  and sets `PYTHONPATH=/var/task`. See `KNOWLEDGE.md`.
+- **CDK test import fix.** `utils/cdk/pyproject.toml` gained
+  `pythonpath = ["."]` so `uv run pytest` can import `control_plane` (matching
+  `uv run python app.py`, which puts the script dir on `sys.path`).
+- **CI** adds a `worker` (scaffold) lint+test job; the `lint-test` job runs in
+  `launcher/` (`working-directory`).
+
+Verified locally: 18 launcher + 6 CDK + 1 worker tests pass; `ruff` clean;
+`just cdk-synth` writes the template. `just docker-build` / `just docker-up` /
+`just cdk-deploy` remain operator-delegated.

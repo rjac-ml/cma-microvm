@@ -1,0 +1,43 @@
+[project]
+name = "claude-microvm-launcher"
+version = "0.1.0"
+description = "Claude self-hosted sandbox launcher: FastAPI/Mangum app packaged as a Lambda container image"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT-0" }
+dependencies = [
+    "fastapi>=0.115",
+    "mangum>=0.18",
+    "uvicorn[standard]>=0.30",
+    "anthropic[webhooks]>=0.69",
+    "aws-lambda-powertools>=3.0",
+    "pydantic-settings>=2.0",
+    "loguru>=0.7",
+    # Upstream botocore/boto3 (>= 1.43.40) ship the `lambda-microvms` service
+    # model, so no vendored wheels are needed in the container image.
+    "botocore>=1.43.40",
+    "boto3>=1.43.40",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.6",
+    "pytest>=8.0",
+    "anyio>=4.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]
+testpaths = ["tests"]
+asyncio_mode = "auto"

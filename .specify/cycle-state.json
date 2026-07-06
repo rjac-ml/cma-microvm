@@ -14,7 +14,8 @@
     "Anthropic Python SDK has first-party managed-agents helpers — worker is portable to Python",
     "One container image for dev/prod parity (Lambda + local uvicorn via Mangum)",
     "Async-first without rewriting Powertools idempotency",
-    "Vendored boto3/botocore wheels carry the lambda-microvms service model",
+    "Upstream botocore (>= 1.43.40) ships lambda-microvms — vendored wheels dropped",
+    "Lambda Python base: interpreter at /var/lang/bin/python3.12; entrypoint takes one arg",
     "standardwebhooks <-> anthropic webhooks unwrap is a clean round-trip for tests",
     "WebhookEvent must read the top-level type, not data.type",
     "Powertools has no in-memory idempotency layer — subclass BasePersistenceLayer",
@@ -22,5 +23,5 @@
     "Lambda container base pinned to Python 3.12 (not 3.14) for wheel ABI safety"
   ],
   "started_at": "2026-07-06T12:48:42Z",
-  "updated_at": "2026-07-06T20:10:00Z"
+  "updated_at": "2026-07-06T21:30:00Z"
 }

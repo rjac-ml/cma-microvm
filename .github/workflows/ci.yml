@@ -9,6 +9,23 @@ jobs:
   lint-test:
     name: lint + test (launcher)
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: launcher
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - run: uv sync
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest -q
+
+  worker:
+    name: lint + test (worker scaffold)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
@@ -42,6 +59,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
       # Build the Lambda container image (the artifact deployed to any cloud).
+      # .dockerignore limits the context to launcher/.
       - uses: docker/build-push-action@v6
         with:
           context: .
